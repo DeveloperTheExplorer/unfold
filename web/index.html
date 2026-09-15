@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unfold</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <button id="tree-toggle" class="ghost icon" title="Show or hide the tree">☰</button>
+  <span class="brand">unfold</span>
+  <span id="scope-line" class="scope"></span>
+  <span class="totals" id="totals"></span>
+  <span class="sep"></span>
+  <button id="view-toggle" class="ghost" title="Switch between the build-order path and the file tree">Files</button>
+  <button id="notes-toggle" class="ghost">Notes <span id="note-count" class="count">0</span></button>
+  <button id="export-btn" class="ghost">Export</button>
+  <button id="post-btn" class="ghost">Post</button>
+  <span id="cost" class="cost" title="Model spend this session"></span>
+</header>
+
+<main>
+  <nav id="tree-pane" aria-label="Change tree">
+    <div class="tree-head">
+      <input id="filter" type="search" placeholder="Filter…" autocomplete="off">
+    </div>
+    <ul id="tree" class="tree"></ul>
+    <div class="tree-foot">
+      <button id="expand-all" class="link">expand</button>
+      <button id="collapse-all" class="link">collapse</button>
+      <label class="check"><input type="checkbox" id="show-hunks"> line groups</label>
+    </div>
+  </nav>
+
+  <section id="narrative" aria-live="polite"></section>
+
+  <section id="code"></section>
+</main>
+
+<aside id="notes-pane" hidden>
+  <div class="aside-head"><span class="eyebrow">All notes</span><button id="notes-close" class="link">close</button></div>
+  <div id="notes-list"></div>
+</aside>
+
+<div id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><span id="modal-title"></span><button id="modal-close" class="link">close</button></div>
+    <div id="modal-body"></div>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>window.UNFOLD_TOKEN = "__UNFOLD_TOKEN__";</script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

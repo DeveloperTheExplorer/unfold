@@ -1,0 +1,15 @@
+{
+  "name": "unfold-review",
+  "version": "0.1.0",
+  "description": "Unfold a pull request top-down: a deterministic tree of the change, explained on demand, with the pre-existing code it depends on.",
+  "type": "module",
+  "bin": { "unfold": "./bin/unfold.js" },
+  "engines": { "node": ">=22.5" },
+  "scripts": { "start": "node bin/unfold.js" },
+  "dependencies": {
+    "typescript": "^5.9.2",
+    "shiki": "^3.0.0"
+  },
+  "license": "MIT",
+  "private": true
+}
