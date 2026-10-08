@@ -5,13 +5,16 @@ import { startServer } from './server.js';
 import { renderTree } from './render-tree.js';
 import { createNote, listNotes, updateNote, deleteNote, addReply, resolveNoteId, getNote } from './db.js';
 import { exportNotes, postToGitHub } from './notes.js';
+import { runPrReview } from './pr-review.js';
 
 const USAGE = `unfold — unfold a pull request top-down
 
 Usage
   unfold [refs] [options]              build the tree and open the review UI
-  unfold path [refs] [options]         print the build-order walk and exit
+  unfold blocks [refs] [options]       print the feature/bug review blocks and exit
+  unfold path [refs] [options]         alias for blocks
   unfold tree [refs] [options]         print the file tree as text and exit
+  unfold review [refs] [options]       run the Codex pr-review skill with Unfold's chunk map
   unfold notes <command> [options]     read and write review notes
 
 Refs
@@ -24,8 +27,11 @@ Refs
 Options
   --port <n>         UI port (default 4380)
   --no-open          do not launch a browser
-  --model <name>     model for explanations (default sonnet)
+  --agent <name>     explanation agent: codex (default) or claude
+  --model <name>     model override for the selected agent
+  --review-model <name> model override for the Codex PR reviewer
   --tools <mode>     repository access for the model: synthesis (default), all, none
+  --deep             force the PR review's parallel deep mode
   --json             machine-readable output where it applies
 
 notes commands
@@ -78,10 +84,33 @@ function scopeOptions(options) {
 		head: options.head ?? scopeFromPositional(options).head,
 		pr: options.pr,
 		ref: options.ref,
+		agent: options.agent,
 		model: options.model,
+		reviewModel: options.reviewModel,
 		tools: options.tools,
 		port: options.port ? Number(options.port) : undefined,
 	};
+}
+
+async function commandReview(options) {
+	const run = createRun(scopeOptions(options));
+	const deep = Boolean(options.deep);
+	process.stderr.write(
+		`Running ${deep ? 'deep ' : ''}Codex PR review across ${run.index.root.payload.totalBlocks ?? 0} Unfold chunk(s)…\n` +
+		`Repository: ${run.scope.cwd}\n`,
+	);
+	const result = await runPrReview({
+		scope: run.scope, index: run.index, deep,
+		model: options.reviewModel ?? options.model,
+	});
+	if (options.json) {
+		process.stdout.write(`${JSON.stringify({
+			...result, scopeKey: run.scopeKey, deep, repoRoot: run.scope.cwd,
+		}, null, 2)}\n`);
+		return;
+	}
+	process.stdout.write(`${result.body}\n`);
+	if (result.threadId) process.stderr.write(`\nContinue with: codex exec resume ${result.threadId} "Follow up on the PR review."\n`);
 }
 
 function openBrowser(url) {
@@ -91,25 +120,27 @@ function openBrowser(url) {
 
 async function commandShow(options) {
 	const started = await startServer(scopeOptions(options));
-	const { scope, index } = started.run;
+	const { scope, index, explainer } = started.run;
 	const label = scope.prTitle ? `PR #${scope.prNumber}: ${scope.prTitle}` : `${scope.baseRef} → ${scope.headRef}`;
-	const stages = index.root.children.filter((child) => child.kind === 'layer');
+	const blocks = index.root.children.filter((child) => child.kind === 'block' && !child.payload.appendix);
 	process.stdout.write(
 		`\n  ${label}\n` +
 		`  ${index.root.added} added, ${index.root.removed} removed across ${index.fileRoot.fileCount} file(s)\n` +
-		`  ${index.root.payload.totalSteps} steps over ${stages.length} stages: ${stages.map((stage) => stage.label.toLowerCase()).join(', ')}\n` +
+		`  ${index.root.payload.totalSteps} code steps across ${blocks.length} candidate review chunk(s)\n` +
+		`  ${index.root.payload.overlapCount ?? 0} shared code unit(s) repeated where their effects overlap\n` +
 		`  ${(index.root.payload.entryPoints ?? []).length} route(s) touched\n\n` +
+		`  Agent: ${explainer.agent}${explainer.model ? ` (${explainer.model})` : ' (current default model)'}\n` +
 		`  ${started.url}\n\n` +
-		'  Nothing is sent anywhere until you explain a node or post to GitHub.\n' +
+		'  Opening the page creates a cached AI review plan; PRs also receive an intent briefing from linked context.\n' +
 		'  Ctrl-C to stop.\n\n',
 	);
 	if (options.open !== false) openBrowser(started.url);
 	await new Promise(() => {});
 }
 
-function commandTree(options, { layered = false } = {}) {
+function commandTree(options, { reviewBlocks = false } = {}) {
 	const run = createRun(scopeOptions(options));
-	const root = layered ? run.index.root : run.index.fileRoot;
+	const root = reviewBlocks ? run.index.root : run.index.fileRoot;
 	if (options.json) {
 		process.stdout.write(`${JSON.stringify({
 			scope: {
@@ -196,7 +227,8 @@ export async function runCli(argv) {
 
 	const command = options.positional[0];
 	if (command === 'tree') { options.positional.shift(); commandTree(options); return; }
-	if (command === 'path') { options.positional.shift(); commandTree(options, { layered: true }); return; }
+	if (command === 'path' || command === 'blocks') { options.positional.shift(); commandTree(options, { reviewBlocks: true }); return; }
+	if (command === 'review') { options.positional.shift(); await commandReview(options); return; }
 	if (command === 'notes') { options.positional.shift(); await commandNotes(options); return; }
 	if (command === 'show') options.positional.shift();
 	await commandShow(options);

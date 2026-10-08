@@ -1,6 +1,6 @@
 import { resolveScope, scopeKey } from './git.js';
 import { buildTree } from './tree.js';
-import { buildLayeredTree } from './layered-tree.js';
+import { buildFeatureTree } from './feature-tree.js';
 import { symbolContext, fileContext } from './context.js';
 import { openDb } from './db.js';
 import { Explainer } from './explain.js';
@@ -9,13 +9,14 @@ import { Explainer } from './explain.js';
 export function createRun(options = {}) {
 	const scope = resolveScope(options);
 	const fileTree = buildTree(scope);
-	const layered = buildLayeredTree(fileTree, scope);
-	// Both views share node keys, so an explanation written in one is seen in the other.
-	const nodes = [...layered.nodes, ...fileTree.nodes];
+	const featureTree = buildFeatureTree(fileTree, scope);
+	// A source may occur in several blocks because its effect must be assessed in
+	// each flow. Block keys therefore remain distinct from file-tree keys.
+	const nodes = [...featureTree.nodes, ...fileTree.nodes];
 	const byId = new Map(nodes.map((node) => [node.id, node]));
 	const byKey = new Map(fileTree.nodes.map((node) => [node.key, node]));
 	const index = {
-		root: layered.root, fileRoot: fileTree.root,
+		root: featureTree.root, fileRoot: fileTree.root,
 		nodes, byId, byKey,
 	};
 
@@ -31,6 +32,12 @@ export function createRun(options = {}) {
 
 	const contextFor = (node) => {
 		if (node.kind === 'file') return fileContext(scope, node);
+		if (node.kind === 'hunk') {
+			const fileNode = fileNodeFor(node);
+			let owner = node.parentId ? byId.get(node.parentId) : null;
+			while (owner && owner.kind !== 'symbol') owner = owner.parentId ? byId.get(owner.parentId) : null;
+			return owner && fileNode ? symbolContext(scope, owner, fileNode) : fileNode ? fileContext(scope, fileNode) : null;
+		}
 		if (node.kind !== 'symbol') return null;
 		// A stand-in for a file with no outline has no symbol range to read.
 		if (!node.payload?.start) {
@@ -43,7 +50,8 @@ export function createRun(options = {}) {
 	const db = openDb(scope.cwd);
 	const explainer = new Explainer({
 		db, scope, index, contextFor,
-		model: options.model ?? 'sonnet',
+		agent: options.agent ?? 'codex',
+		model: options.model,
 		concurrency: options.concurrency ?? 3,
 		tools: options.tools ?? 'synthesis',
 	});
@@ -65,6 +73,10 @@ export function treeSummary(root) {
 		symbolKind: node.payload?.symbolKind ?? null,
 		layer: node.payload?.layer ?? undefined,
 		blurb: node.payload?.blurb ?? undefined,
+		blockType: node.payload?.blockType ?? undefined,
+		shared: node.payload?.shared || undefined,
+		sharedCount: node.payload?.sharedCount || undefined,
+		appendix: node.payload?.appendix || undefined,
 		step: node.payload?.step ?? undefined,
 		endpoint: node.payload?.facts ? true : undefined,
 		excluded: node.payload?.excluded || undefined,

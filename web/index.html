@@ -9,11 +9,13 @@
 <body>
 <header>
   <button id="tree-toggle" class="ghost icon" title="Show or hide the tree">☰</button>
-  <span class="brand">unfold</span>
+  <span class="brand">unfold <span class="brand-mode">review</span></span>
   <span id="scope-line" class="scope"></span>
+  <div class="header-progress" title="Review blocks visited"><span id="progress-label">0 / 0</span><span class="progress-track"><span id="progress-fill"></span></span></div>
   <span class="totals" id="totals"></span>
   <span class="sep"></span>
-  <button id="view-toggle" class="ghost" title="Switch between the build-order path and the file tree">Files</button>
+  <button id="review-trigger" class="ghost" title="Run or inspect the full Codex PR review">Agent review</button>
+  <button id="view-toggle" class="ghost" title="Switch between review blocks and the file tree">Files</button>
   <button id="notes-toggle" class="ghost">Notes <span id="note-count" class="count">0</span></button>
   <button id="export-btn" class="ghost">Export</button>
   <button id="post-btn" class="ghost">Post</button>
@@ -23,7 +25,8 @@
 <main>
   <nav id="tree-pane" aria-label="Change tree">
     <div class="tree-head">
-      <input id="filter" type="search" placeholder="Filter…" autocomplete="off">
+      <div class="tree-heading"><strong>Review plan</strong><span class="tree-hint">Focused changes, reviewed separately</span></div>
+      <input id="filter" type="search" placeholder="Find a step or symbol…" autocomplete="off">
     </div>
     <ul id="tree" class="tree"></ul>
     <div class="tree-foot">

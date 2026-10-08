@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, extname } from 'node:path';
 import { readHead, gitTry, readBatch } from './git.js';
+import { outline, supportsOutline } from './structure.js';
 
 /**
  * The code that already existed. A diff tells you what changed; this tells you
@@ -31,6 +32,14 @@ const CODE_GLOB = '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,vue}';
 function fileText(scope, path) {
 	if (!textCache.has(path)) textCache.set(path, readHead(scope, path));
 	return textCache.get(path);
+}
+
+function flattenSymbols(symbols, out = []) {
+	for (const symbol of symbols ?? []) {
+		out.push(symbol);
+		flattenSymbols(symbol.children, out);
+	}
+	return out;
 }
 
 /**
@@ -144,6 +153,9 @@ function findDeclaration(scope, name, paths) {
 
 const DECLARATION_PATTERN = (name) =>
 	`export\\s+(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?(?:default\\s+)?(?:function|class|const|let|var|interface|type|enum)\\s+${name}\\b`;
+
+const ANY_DECLARATION_PATTERN = (name) =>
+	`(?:export\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?(?:default\\s+)?(?:function|class|const|let|var|interface|type|enum)\\s+${name}\\b`;
 
 /** Where an identifier used in the changed lines actually comes from. */
 function resolveDependencies(scope, filePath, imports, identifiers) {
@@ -293,6 +305,73 @@ export function fileContext(scope, fileNode) {
 	};
 	cache.set(fileNode.key, result);
 	return result;
+}
+
+/** A bounded source window used when the reviewer follows an evidence link. */
+export function sourcePreview(scope, path, line = 1) {
+	if (!path || path.startsWith('/') || path.split('/').includes('..')) return null;
+	const text = fileText(scope, path);
+	if (text == null) return null;
+	const all = text.split('\n');
+	const target = Math.max(1, Math.min(Number(line) || 1, all.length));
+	let start = Math.max(1, target - 12);
+	let end = Math.min(all.length, target + 18);
+	let symbol = null;
+	if (supportsOutline(path)) {
+		const symbols = flattenSymbols(outline(path, text)?.symbols ?? []);
+		symbol = symbols
+			.filter((candidate) => candidate.start <= target && target <= candidate.end)
+			.sort((a, b) => (a.end - a.start) - (b.end - b.start))[0] ?? null;
+		if (symbol && symbol.end - symbol.start <= 180) {
+			start = symbol.start;
+			end = symbol.end;
+		}
+	}
+	return {
+		path, start, end, target, symbol: symbol ? { name: symbol.name, kind: symbol.kind } : null,
+		lines: all.slice(start - 1, end).map((s, index) => ({ n: start + index, s, changed: false })),
+	};
+}
+
+/**
+ * Resolve a clicked identifier using the file outline/import table first, then
+ * a package-scoped declaration search. This deliberately returns no answer
+ * instead of guessing when static evidence is weak.
+ */
+export function resolveIdentifier(scope, { path, name }) {
+	if (!path || path.startsWith('/') || path.split('/').includes('..')) return null;
+	if (!/^[A-Za-z_$][\w$]*$/.test(name ?? '')) return null;
+	const text = fileText(scope, path);
+	if (text == null) return null;
+	const parsed = supportsOutline(path) ? outline(path, text) : null;
+	const local = flattenSymbols(parsed?.symbols ?? []).find((symbol) => symbol.name === name);
+	if (local) return { path, line: local.start, name, kind: local.kind, reason: 'declared in this file' };
+
+	for (const entry of parsed?.imports ?? []) {
+		const imported = entry.names.find((candidate) => candidate.local === name);
+		if (!imported) continue;
+		if (entry.module.startsWith('.')) {
+			const resolved = resolveRelative(scope, path, entry.module);
+			if (!resolved) return null;
+			const declarationName = imported.imported === 'default' ? name : imported.imported;
+			const resolvedText = fileText(scope, resolved);
+			const outlined = resolvedText == null ? null : flattenSymbols(outline(resolved, resolvedText)?.symbols ?? [])
+				.find((symbol) => symbol.name === declarationName);
+			const declaration = outlined ? { line: outlined.start } : findDeclaration(scope, declarationName, [resolved])
+				?? rgSearch(ANY_DECLARATION_PATTERN(declarationName), { cwd: scope.cwd, max: 1, perFile: 1, paths: [resolved] })[0];
+			return { path: resolved, line: declaration?.line ?? 1, name, kind: outlined?.kind, reason: `imported from ${entry.module}` };
+		}
+		const packageDir = packageDirFor(scope, entry.module);
+		if (!packageDir || imported.imported === '*' || imported.imported === 'default') return null;
+		const declaration = findDeclaration(scope, imported.imported, [packageDir]);
+		return declaration ? { path: declaration.path, line: declaration.line, name, reason: `imported from ${entry.module}` } : null;
+	}
+
+	if (STOPLIST.has(name)) return null;
+	const declaration = rgSearch(ANY_DECLARATION_PATTERN(name), {
+		cwd: scope.cwd, max: 2, perFile: 1, paths: [packageRootFor(scope, path)], globs: [CODE_GLOB],
+	}).filter((hit) => hit.path !== path)[0];
+	return declaration ? { path: declaration.path, line: declaration.line, name, reason: 'declaration in this package' } : null;
 }
 
 export function clearContextCache() {

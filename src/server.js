@@ -1,12 +1,18 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRun, treeSummary } from './run.js';
 import { highlightLines } from './highlight.js';
-import { createNote, getNote, listNotes, updateNote, deleteNote, addReply, resolveNoteId } from './db.js';
+import {
+	createNote, getNote, listNotes, updateNote, deleteNote, addReply, resolveNoteId,
+	createPrReview, getPrReview, latestPrReview, updatePrReview, completePrReview, failPrReview,
+} from './db.js';
 import { exportNotes, postToGitHub } from './notes.js';
+import { sourcePreview, resolveIdentifier } from './context.js';
+import { linkedLinearIssues } from './linear.js';
+import { runPrReview } from './pr-review.js';
 
 const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
@@ -77,16 +83,45 @@ function descendantHunks(node, out = []) {
 	return out;
 }
 
+function fallbackBrief(scope) {
+	const paragraphs = String(scope.prBody ?? '')
+		.replace(/<!--[^]*?-->/g, '')
+		.split(/\n\s*\n/)
+		.map((part) => part.replace(/^#{1,6}\s+/gm, '').replace(/^[-*]\s+/gm, '').trim())
+		.filter((part) => part && !/^https?:\/\//.test(part))
+		.slice(0, 2)
+		.join('\n\n')
+		.slice(0, 1200);
+	return paragraphs || `${scope.prTitle ?? 'This pull request'} does not include enough description to establish its intended outcome.`;
+}
+
 export async function startServer(options = {}) {
 	const run = createRun(options);
 	const token = randomBytes(16).toString('hex');
 	const { index, db, scope, explainer } = run;
 
 	const notesForScope = (status = 'all') => listNotes(db, { scopeKey: run.scopeKey, status });
+	let reviewJob = latestPrReview(db, run.scopeKey);
+	// A working-tree scope keeps the same scope key while its files change. Never
+	// present a completed review for a different version of the diff.
+	if (reviewJob?.content_hash !== index.root.contentHash) reviewJob = null;
+	const reviewAge = reviewJob ? Date.now() - Date.parse(reviewJob.started_at) : 0;
+	if (reviewJob?.status === 'running' && reviewAge > 31 * 60 * 1000) {
+		reviewJob = failPrReview(db, reviewJob.id, 'The Unfold server stopped before this review completed.', reviewJob.thread_id);
+	}
+	const publicReview = (row) => row ? {
+		id: row.id, status: row.status, deep: Boolean(row.deep), body: row.body ?? null,
+		model: row.model ?? null, threadId: row.thread_id ?? null,
+		activity: row.activity ?? null, error: row.error ?? null,
+		startedAt: row.started_at, completedAt: row.completed_at ?? null,
+		repoRoot: scope.cwd,
+		capabilities: ['repository', 'shell', 'git', 'configured MCPs'],
+	} : { status: 'idle', repoRoot: scope.cwd, capabilities: ['repository', 'shell', 'git', 'configured MCPs'] };
 
 	const routes = {
 		'GET /api/run': () => ({
 			scopeKey: run.scopeKey,
+			agent: { name: explainer.agent, model: explainer.model },
 			scope: {
 				kind: scope.scopeKind, baseRef: scope.baseRef, headRef: scope.headRef,
 				baseSha: scope.baseSha?.slice(0, 9), headSha: scope.headSha?.slice(0, 9),
@@ -101,6 +136,7 @@ export async function startServer(options = {}) {
 			},
 			stepOrder: index.root.payload.stepOrder ?? [],
 			totalSteps: index.root.payload.totalSteps ?? 0,
+			totalBlocks: index.root.payload.totalBlocks ?? 0,
 			explanations: explainer.knownExplanations(),
 			notes: notesForScope(),
 			cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls },
@@ -111,9 +147,9 @@ export async function startServer(options = {}) {
 			const node = index.byId.get(segments[0]);
 			if (!node) return httpResult(404, { error: 'No such node.' });
 			const context = run.contextFor(node);
-			const showsHunks = node.kind === 'file' || node.kind === 'symbol' || node.kind === 'hunk';
+			const showsHunks = node.kind === 'block' || node.kind === 'file' || node.kind === 'symbol' || node.kind === 'hunk';
 			const hunks = showsHunks
-				? await Promise.all(descendantHunks(node).slice(0, 40).map((hunk) => renderHunk(hunk.payload)))
+				? await Promise.all(descendantHunks(node).slice(0, node.kind === 'block' ? 160 : 40).map((hunk) => renderHunk(hunk.payload)))
 				: [];
 			return {
 				node: {
@@ -173,6 +209,99 @@ export async function startServer(options = {}) {
 			} catch (error) {
 				return httpResult(502, { error: String(error.message).slice(0, 600) });
 			}
+		},
+
+		'POST /api/ask': async ({ segments, body }) => {
+			const node = index.byId.get(segments[0]);
+			if (!node) return httpResult(404, { error: 'No such node.' });
+			const question = String(body.question ?? '').trim();
+			if (!question) return httpResult(400, { error: 'Ask a question first.' });
+			try {
+				const result = await explainer.ask(node, question, Array.isArray(body.history) ? body.history : []);
+				return { ...result, cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls } };
+			} catch (error) {
+				return httpResult(502, { error: String(error.message).slice(0, 600) });
+			}
+		},
+
+		'POST /api/plan': async ({ body }) => {
+			try {
+				const result = await explainer.plan(index.root, { force: Boolean(body.force) });
+				return {
+					...result, generated: true,
+					cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls },
+				};
+			} catch (error) {
+				return {
+					chunks: explainer.fallbackPlan(index.root), generated: false,
+					warning: `Automatic review plan unavailable: ${String(error.message).slice(0, 260)}`,
+					cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls },
+				};
+			}
+		},
+
+		'GET /api/review': () => {
+			if (reviewJob?.id) reviewJob = getPrReview(db, reviewJob.id) ?? reviewJob;
+			return publicReview(reviewJob);
+		},
+
+		'POST /api/review': ({ body }) => {
+			if (reviewJob?.status === 'running') return publicReview(reviewJob);
+			const deep = Boolean(body.deep);
+			const id = randomUUID();
+			reviewJob = createPrReview(db, {
+				id, scopeKey: run.scopeKey, contentHash: index.root.contentHash,
+				deep, model: options.reviewModel ?? null,
+				activity: 'Starting Codex in the repository…',
+			});
+			const chunks = Array.isArray(body.chunks) ? body.chunks : [];
+			void runPrReview({
+				scope, index, chunks, deep, model: options.reviewModel,
+				onProgress: ({ activity, threadId }) => {
+					reviewJob = updatePrReview(db, id, {
+						activity, ...(threadId ? { thread_id: threadId } : {}),
+					});
+				},
+			}).then((result) => {
+				reviewJob = completePrReview(db, id, result);
+			}).catch((error) => {
+				reviewJob = failPrReview(db, id, error.message, error.threadId ?? reviewJob?.thread_id ?? null);
+			});
+			return publicReview(reviewJob);
+		},
+
+		'POST /api/brief': async () => {
+			if (scope.scopeKind !== 'pr') return { body: fallbackBrief(scope), generated: false, linearIssues: [] };
+			const linearIssues = await linkedLinearIssues(scope.prBody);
+			const sources = linearIssues.map(({ identifier, title, url, state, project, resolved, error }) => ({
+				identifier, title, url, state, project, resolved, error,
+			}));
+			try {
+				const result = await explainer.brief(index.root, linearIssues);
+				return {
+					...result, generated: true, linearIssues: sources,
+					cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls },
+				};
+			} catch (error) {
+				return {
+					body: fallbackBrief(scope), generated: false, linearIssues: sources,
+					warning: `Automatic summary unavailable: ${String(error.message).slice(0, 220)}`,
+					cost: { totalUsd: explainer.totalCostUsd, calls: explainer.calls },
+				};
+			}
+		},
+
+		'GET /api/source': async ({ query }) => {
+			const preview = sourcePreview(scope, query.get('path'), Number(query.get('line')) || 1);
+			if (!preview) return httpResult(404, { error: 'Could not read that source location.' });
+			return { ...preview, source: await renderSource(preview, extname(preview.path).slice(1)) };
+		},
+
+		'GET /api/resolve': ({ query }) => {
+			const target = resolveIdentifier(scope, {
+				path: query.get('path'), name: query.get('name'), line: Number(query.get('line')) || 1,
+			});
+			return target ? { target } : httpResult(404, { error: `No reliable definition found for ${query.get('name') ?? 'that identifier'}.` });
 		},
 
 		// The file view is a fallback, so it is only serialised when asked for.

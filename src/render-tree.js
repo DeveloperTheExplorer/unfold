@@ -1,8 +1,6 @@
 import { factsLine } from './layers.js';
 
 /** Plain-text tree renderer, used by `unfold tree` and for prompt context. */
-const GLYPH = { root: '', group: '', file: '', symbol: '', hunk: '' };
-
 export function renderTree(root, { maxDepth = 99, showHunks = true } = {}) {
 	const lines = [];
 	const stats = (node) => (node.added || node.removed ? `  [+${node.added} −${node.removed}]` : '');
@@ -11,9 +9,10 @@ export function renderTree(root, { maxDepth = 99, showHunks = true } = {}) {
 		if (!showHunks && node.kind === 'hunk') return;
 		if (depth === 0) {
 			lines.push(`${node.label}${stats(node)}`);
-		} else if (node.kind === 'layer') {
+		} else if (node.kind === 'block') {
 			lines.push('');
-			lines.push(`${node.payload.step}. ${node.label.toUpperCase()} — ${node.payload.blurb}${stats(node)}`);
+			const type = node.payload.blockType === 'bug' ? 'BUG FIX' : node.payload.blockType === 'feature' ? 'FEATURE' : node.payload.appendix ? 'APPENDIX' : 'CHANGE';
+			lines.push(`${node.payload.step ?? ''}. ${type} · ${node.label}${node.payload.sharedCount ? ` · ${node.payload.sharedCount} shared` : ''}${stats(node)}`);
 		} else {
 			const step = node.payload?.step ? `${String(node.payload.step).padStart(3)}. ` : '     ';
 			const kindTag = node.kind === 'symbol' && !node.payload.facts ? `${node.payload.symbolKind} ` : '';

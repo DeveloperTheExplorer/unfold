@@ -1,11 +1,4 @@
-/**
- * Architectural classification. A change is read in the order it would have been
- * built — contracts, then what can call them, then what they do, then what they
- * persist — so the path never depends on where a file happens to sit.
- *
- * Every rule here reads a decorator, a path convention or a declaration kind.
- * Nothing is inferred by a model.
- */
+/** Architectural roles used to order and explain code inside each feature block. */
 
 export const LAYERS = [
 	{ id: 'contracts', title: 'Contracts', blurb: 'the shapes everything else agrees on' },
@@ -15,9 +8,9 @@ export const LAYERS = [
 	{ id: 'external', title: 'External calls', blurb: 'what it talks to outside the process' },
 	{ id: 'wiring', title: 'Wiring', blurb: 'registration, configuration and startup' },
 	{ id: 'surface', title: 'Surface', blurb: 'what the user touches' },
-	{ id: 'tests', title: 'Tests', blurb: 'what is now pinned down' },
 	{ id: 'imports', title: 'Imports and top level', blurb: 'wiring at the top of files, rarely the story' },
-	{ id: 'other', title: 'Everything else', blurb: 'nothing here matched a known layer' },
+	{ id: 'other', title: 'Everything else', blurb: 'nothing here matched a known role' },
+	{ id: 'tests', title: 'Tests', blurb: 'optional evidence, kept out of the main reading path' },
 ];
 
 export const LAYER_IDS = LAYERS.map((layer) => layer.id);

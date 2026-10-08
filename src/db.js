@@ -1,15 +1,26 @@
 import { DatabaseSync } from 'node:sqlite';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, dirname } from 'node:path';
 
 /**
- * Only two things outlive a run: what the model already explained (cache) and
- * what the reviewer wrote (notes). The tree itself is cheap to rebuild.
+ * Explanations, independent review runs, and reviewer notes outlive a run. The
+ * tree itself is cheap to rebuild.
  */
 
 export function databaseFile(repoRoot) {
-	return join(repoRoot, '.git', 'unfold', 'unfold.sqlite');
+	// In a linked worktree `.git` is a pointer file, not a directory. Let Git
+	// resolve the real per-worktree metadata path so Unfold works in both shapes.
+	try {
+		const gitDir = execFileSync(
+			'git', ['rev-parse', '--absolute-git-dir'],
+			{ cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+		).trim();
+		return join(gitDir, 'unfold', 'unfold.sqlite');
+	} catch {
+		return join(repoRoot, '.git', 'unfold', 'unfold.sqlite');
+	}
 }
 
 const SCHEMA = `
@@ -50,6 +61,22 @@ CREATE TABLE IF NOT EXISTS note_reply (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS note_reply_note ON note_reply (note_id);
+
+CREATE TABLE IF NOT EXISTS pr_review (
+  id           TEXT PRIMARY KEY,
+  scope_key    TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  deep         INTEGER NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL,
+  body         TEXT,
+  model        TEXT,
+  thread_id    TEXT,
+  activity     TEXT,
+  error        TEXT,
+  started_at   TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS pr_review_scope ON pr_review (scope_key, started_at DESC);
 `;
 
 export function openDb(repoRoot) {
@@ -63,6 +90,55 @@ export function openDb(repoRoot) {
 }
 
 const now = () => new Date().toISOString();
+
+export function createPrReview(db, review) {
+	const timestamp = now();
+	db.prepare(
+		`INSERT INTO pr_review
+		 (id, scope_key, content_hash, deep, status, model, activity, started_at)
+		 VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
+	).run(
+		review.id, review.scopeKey, review.contentHash, review.deep ? 1 : 0,
+		review.model ?? null, review.activity ?? 'Starting Codex…', timestamp,
+	);
+	return getPrReview(db, review.id);
+}
+
+export function getPrReview(db, id) {
+	return db.prepare('SELECT * FROM pr_review WHERE id = ?').get(id) ?? null;
+}
+
+export function latestPrReview(db, scopeKey) {
+	return db.prepare('SELECT * FROM pr_review WHERE scope_key = ? ORDER BY started_at DESC LIMIT 1').get(scopeKey) ?? null;
+}
+
+export function updatePrReview(db, id, fields) {
+	const allowed = ['status', 'body', 'model', 'thread_id', 'activity', 'error', 'completed_at'];
+	const sets = [];
+	const values = [];
+	for (const key of allowed) {
+		if (fields[key] !== undefined) { sets.push(`${key} = ?`); values.push(fields[key]); }
+	}
+	if (!sets.length) return getPrReview(db, id);
+	values.push(id);
+	db.prepare(`UPDATE pr_review SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+	return getPrReview(db, id);
+}
+
+export function completePrReview(db, id, result) {
+	return updatePrReview(db, id, {
+		status: 'complete', body: result.body, model: result.model,
+		thread_id: result.threadId ?? null, activity: 'Review complete', error: null,
+		completed_at: now(),
+	});
+}
+
+export function failPrReview(db, id, error, threadId = null) {
+	return updatePrReview(db, id, {
+		status: 'failed', error: String(error), thread_id: threadId,
+		activity: 'Review stopped', completed_at: now(),
+	});
+}
 
 export function getExplanation(db, nodeKey, contentHash, mode) {
 	return db
