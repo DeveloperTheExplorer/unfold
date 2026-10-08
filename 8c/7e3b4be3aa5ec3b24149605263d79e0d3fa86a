@@ -1,0 +1,39 @@
+src/pr-review.js
+  s_df489d192f9646::t_596a1c46122c13 110
+  s_df489d192f9646::t_2135667aa1ff3d 222
+  s_df489d192f9646::t_1b3f1599056d47 4-5,109,111-141,143-153,164,167,221,223-224,227-262
+  s_df489d192f9646::t_ffeb403cdca4cb 142
+web/app.js
+  s_df489d192f9646::t_72bf071cf7875f 26-27,35,125-133
+  s_df489d192f9646::t_6a1c493d414085 583-592,596-600,603,606-609,611
+  s_df489d192f9646::t_c3c4bc90f45a0e 411-412,1156,1185-1189,1233-1236,1355
+  s_df489d192f9646::t_0479bd83f8edf9 410,414-417,427-434,437
+  s_df489d192f9646::t_c10b08d8159a30 887-920,931,943,949,951-956,959
+web/style.css
+  s_df489d192f9646::t_126bcbc77eb1ce 303-310,403,418,633-634,636-637
+README.md
+  s_df489d192f9646::t_9529694434e245 165-169,177,228-229
+src/db.js
+  s_df489d192f9646::t_d010aaf2654270 73,81-91,101-102,112-113,116-117,131,146,152-166
+src/cli.js
+  s_df489d192f9646::t_2becdf6299057b 33,91,107
+src/server.js
+  s_df489d192f9646::t_e6e2988b6480cf 339
+  s_df489d192f9646::t_7aa8e9eb3b4ffd 11,16-18,105-107,118-122,126,130-134,136,268-277,281,286,300-338,340-346
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8c7e3b4be3aa5ec3b24149605263d79e0d3fa86a",
+  "prompts": {},
+  "sessions": {
+    "s_df489d192f9646": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae8c-ac0f-7ac1-b5fc-a9d6cc67d05a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Arvin Ansari <arvin.ansari@n8n.io>"
+    }
+  }
+}
