@@ -300,6 +300,14 @@ h1.title.route { font-family: var(--mono); font-size: 15px; letter-spacing: 0; w
 .agent-review-head p { max-width: 54ch; margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.6; }
 .agent-review-head code { font: 11.5px var(--mono); color: #c8d3e0; }
 .agent-review-head .actions { flex: 0 0 auto; margin: 2px 0 0; }
+.agent-review-controls { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(145px, .55fr) auto; align-items: end; gap: 10px; margin-top: 20px; }
+.agent-control { display: grid; gap: 6px; min-width: 0; }
+.agent-control > span { color: var(--text-3); font-size: 9.5px; font-weight: 600; letter-spacing: .04em; }
+.agent-control input, .agent-control select { width: 100%; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 8px; outline: none; background: var(--panel-2); color: var(--text); font: 11.5px var(--mono); }
+.agent-control input:focus, .agent-control select:focus { border-color: rgba(108,176,255,.65); }
+.agent-control input:disabled, .agent-control select:disabled { opacity: .55; }
+.agent-run-actions { display: flex; align-items: center; gap: 7px; min-height: 36px; }
+.agent-control-note { margin: 7px 0 0; color: var(--text-3); font-size: 10.5px; line-height: 1.45; }
 .agent-capabilities { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
 .agent-capabilities span { padding: 3px 7px; border: 1px solid var(--line-2); border-radius: 99px; color: var(--text-3); font-size: 9.5px; }
 .agent-review-status { display: flex; align-items: center; gap: 11px; margin-top: 18px; padding: 11px 13px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel-2); }
@@ -392,6 +400,7 @@ h1.title.route { font-family: var(--mono); font-size: 15px; letter-spacing: 0; w
 .ask-compose { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); padding: 8px; }
 .ask-compose:focus-within { border-color: rgba(108,176,255,.6); }
 .ask-compose textarea { flex: 1 1 auto; min-height: 44px; max-height: 140px; resize: vertical; border: 0; outline: 0; color: var(--text); background: transparent; font: 13px/1.5 var(--sans); }
+.ask-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .ask-foot { color: var(--text-3); font-size: 10.5px; margin-top: 7px; }
 .chunk-brief { display: grid; gap: 14px; margin: 0 0 24px; padding: 18px 20px; border: 1px solid var(--line-2); border-radius: 11px; background: linear-gradient(135deg, rgba(108,176,255,.065), transparent 72%); }
 .chunk-brief > div { min-width: 0; }
@@ -406,6 +415,7 @@ h1.title.route { font-family: var(--mono); font-size: 15px; letter-spacing: 0; w
 .message > span { display: block; color: var(--text-3); font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
 .message > div { font-size: 13px; line-height: 1.65; color: var(--text-2); }
 .message.user > div { color: var(--text); }
+.message.reviewer > span { color: var(--accent); }
 .message p { margin: 0 0 8px; }
 
 .pager {
@@ -620,5 +630,9 @@ main.no-tree #tree-pane { display: none; }
   .review-plan-summary { flex-direction: column; gap: 10px; }
   .review-counts { justify-content: flex-start; }
   .agent-review-head { flex-direction: column; gap: 16px; }
+  .agent-review-controls { grid-template-columns: 1fr; }
+  .agent-run-actions { flex-wrap: wrap; }
   .agent-session { flex-direction: column; }
+  .ask-compose { align-items: stretch; flex-direction: column; }
+  .ask-actions { justify-content: flex-end; flex-wrap: wrap; }
 }

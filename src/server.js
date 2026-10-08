@@ -8,11 +8,14 @@ import { highlightLines } from './highlight.js';
 import {
 	createNote, getNote, listNotes, updateNote, deleteNote, addReply, resolveNoteId,
 	createPrReview, getPrReview, latestPrReview, updatePrReview, completePrReview, failPrReview,
+	createPrReviewMessage, listPrReviewMessages,
 } from './db.js';
 import { exportNotes, postToGitHub } from './notes.js';
 import { sourcePreview, resolveIdentifier } from './context.js';
 import { linkedLinearIssues } from './linear.js';
-import { runPrReview } from './pr-review.js';
+import {
+	runPrReview, resumePrReview, normalizeReviewModel, normalizeReviewEffort,
+} from './pr-review.js';
 
 const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
@@ -99,6 +102,9 @@ export async function startServer(options = {}) {
 	const run = createRun(options);
 	const token = randomBytes(16).toString('hex');
 	const { index, db, scope, explainer } = run;
+	const defaultReviewModel = normalizeReviewModel(options.reviewModel);
+	const defaultReviewEffort = normalizeReviewEffort(options.reviewEffort);
+	let reviewQuestionBusy = false;
 
 	const notesForScope = (status = 'all') => listNotes(db, { scopeKey: run.scopeKey, status });
 	let reviewJob = latestPrReview(db, run.scopeKey);
@@ -109,14 +115,25 @@ export async function startServer(options = {}) {
 	if (reviewJob?.status === 'running' && reviewAge > 31 * 60 * 1000) {
 		reviewJob = failPrReview(db, reviewJob.id, 'The Unfold server stopped before this review completed.', reviewJob.thread_id);
 	}
+	const reviewMessages = (row) => listPrReviewMessages(db, row?.id).map((message) => ({
+		id: message.id, nodeKey: message.node_key, nodeId: message.node_id,
+		role: message.role, body: message.body, createdAt: message.created_at,
+	}));
+	const reviewDefaults = { model: defaultReviewModel, reasoningEffort: defaultReviewEffort };
 	const publicReview = (row) => row ? {
 		id: row.id, status: row.status, deep: Boolean(row.deep), body: row.body ?? null,
 		model: row.model ?? null, threadId: row.thread_id ?? null,
+		reasoningEffort: row.reasoning_effort ?? null,
 		activity: row.activity ?? null, error: row.error ?? null,
 		startedAt: row.started_at, completedAt: row.completed_at ?? null,
 		repoRoot: scope.cwd,
+		questionBusy: reviewQuestionBusy, messages: reviewMessages(row), defaults: reviewDefaults,
 		capabilities: ['repository', 'shell', 'git', 'configured MCPs'],
-	} : { status: 'idle', repoRoot: scope.cwd, capabilities: ['repository', 'shell', 'git', 'configured MCPs'] };
+	} : {
+		status: 'idle', repoRoot: scope.cwd, questionBusy: reviewQuestionBusy,
+		messages: [], defaults: reviewDefaults,
+		capabilities: ['repository', 'shell', 'git', 'configured MCPs'],
+	};
 
 	const routes = {
 		'GET /api/run': () => ({
@@ -248,15 +265,25 @@ export async function startServer(options = {}) {
 		'POST /api/review': ({ body }) => {
 			if (reviewJob?.status === 'running') return publicReview(reviewJob);
 			const deep = Boolean(body.deep);
+			let model;
+			let reasoningEffort;
+			try {
+				model = body.model === undefined ? defaultReviewModel : normalizeReviewModel(body.model);
+				reasoningEffort = body.reasoningEffort === undefined
+					? defaultReviewEffort
+					: normalizeReviewEffort(body.reasoningEffort);
+			} catch (error) {
+				return httpResult(400, { error: error.message });
+			}
 			const id = randomUUID();
 			reviewJob = createPrReview(db, {
 				id, scopeKey: run.scopeKey, contentHash: index.root.contentHash,
-				deep, model: options.reviewModel ?? null,
+				deep, model, reasoningEffort,
 				activity: 'Starting Codex in the repository…',
 			});
 			const chunks = Array.isArray(body.chunks) ? body.chunks : [];
 			void runPrReview({
-				scope, index, chunks, deep, model: options.reviewModel,
+				scope, index, chunks, deep, model, reasoningEffort,
 				onProgress: ({ activity, threadId }) => {
 					reviewJob = updatePrReview(db, id, {
 						activity, ...(threadId ? { thread_id: threadId } : {}),
@@ -268,6 +295,55 @@ export async function startServer(options = {}) {
 				reviewJob = failPrReview(db, id, error.message, error.threadId ?? reviewJob?.thread_id ?? null);
 			});
 			return publicReview(reviewJob);
+		},
+
+		'POST /api/review-question': async ({ segments, body }) => {
+			const node = index.byId.get(segments[0]);
+			if (!node) return httpResult(404, { error: 'No such node.' });
+			if (reviewQuestionBusy) return httpResult(409, { error: 'The Codex reviewer is already answering a question.' });
+			if (!reviewJob?.thread_id || reviewJob.status !== 'complete') {
+				return httpResult(409, { error: 'Run the agent review before asking its Codex session a question.' });
+			}
+			const question = String(body.question ?? '').trim();
+			if (!question) return httpResult(400, { error: 'Ask a question first.' });
+			if (question.length > 6000) return httpResult(400, { error: 'Keep reviewer questions under 6,000 characters.' });
+			let model;
+			let reasoningEffort;
+			try {
+				model = body.model === undefined ? normalizeReviewModel(reviewJob.model) : normalizeReviewModel(body.model);
+				reasoningEffort = body.reasoningEffort === undefined
+					? normalizeReviewEffort(reviewJob.reasoning_effort)
+					: normalizeReviewEffort(body.reasoningEffort);
+			} catch (error) {
+				return httpResult(400, { error: error.message });
+			}
+			reviewQuestionBusy = true;
+			reviewJob = updatePrReview(db, reviewJob.id, { activity: `Answering a question about ${node.label}…` });
+			try {
+				const result = await resumePrReview({
+					scope, threadId: reviewJob.thread_id, node, question, model, reasoningEffort,
+					onProgress: ({ activity }) => {
+						reviewJob = updatePrReview(db, reviewJob.id, { activity });
+					},
+				});
+				createPrReviewMessage(db, {
+					reviewId: reviewJob.id, nodeKey: node.key, nodeId: node.id, role: 'user', body: question,
+				});
+				createPrReviewMessage(db, {
+					reviewId: reviewJob.id, nodeKey: node.key, nodeId: node.id, role: 'assistant', body: result.body,
+				});
+				reviewJob = updatePrReview(db, reviewJob.id, {
+					model, reasoning_effort: reasoningEffort,
+					thread_id: result.threadId ?? reviewJob.thread_id, activity: 'Review complete',
+				});
+				reviewQuestionBusy = false;
+				return { body: result.body, review: publicReview(reviewJob) };
+			} catch (error) {
+				reviewJob = updatePrReview(db, reviewJob.id, { activity: 'Review complete' });
+				return httpResult(502, { error: String(error.message).slice(0, 600) });
+			} finally {
+				reviewQuestionBusy = false;
+			}
 		},
 
 		'POST /api/brief': async () => {

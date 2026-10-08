@@ -162,8 +162,11 @@ Unfold passes its execution-ordered chunks as a coverage map, not as evidence.
 The reviewer still gathers the PR and Linear context, reads repository rules,
 searches callers and dependencies, and verifies every finding independently.
 Findings name their relevant stable block IDs so they reappear on those chunks
-inside Unfold. The result and Codex session ID are persisted; copy the resume
-command from the UI to continue in the same capable session.
+inside Unfold. The result and Codex session ID are persisted. Choose the model
+and reasoning effort from the Agent review card, then ask that same
+repository-aware session follow-up questions from the PR overview, any chunk,
+or any code step. Each answer is saved with the node that prompted it. A quick
+answer remains available when the current node's context is enough.
 
 The same workflow is available without the UI:
 
@@ -171,6 +174,7 @@ The same workflow is available without the UI:
 unfold review --pr 123          # standard review; deep mode is chosen when warranted
 unfold review --pr 123 --deep   # force the skill's deep review mode
 unfold review --review-model gpt-6-astra
+unfold review --review-model gpt-6-astra --review-effort xhigh
 ```
 
 The review skill is intentionally read-only and never posts to GitHub. The
@@ -221,7 +225,8 @@ unfold notes <command>       see above
 ```
 
 Options: `--port`, `--no-open`, `--agent codex|claude`, `--model <name>`,
-`--review-model <name>`, `--tools synthesis|all|none`, `--deep`.
+`--review-model <name>`, `--review-effort low|medium|high|xhigh|max`,
+`--tools synthesis|all|none`, `--deep`.
 
 Codex is the default agent and uses the Codex CLI's current default model, so
 unfold does not freeze its default to a model name that will go stale. Override

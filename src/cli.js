@@ -30,6 +30,7 @@ Options
   --agent <name>     explanation agent: codex (default) or claude
   --model <name>     model override for the selected agent
   --review-model <name> model override for the Codex PR reviewer
+  --review-effort <level> reasoning effort: low, medium, high, xhigh, or max
   --tools <mode>     repository access for the model: synthesis (default), all, none
   --deep             force the PR review's parallel deep mode
   --json             machine-readable output where it applies
@@ -87,6 +88,7 @@ function scopeOptions(options) {
 		agent: options.agent,
 		model: options.model,
 		reviewModel: options.reviewModel,
+		reviewEffort: options.reviewEffort,
 		tools: options.tools,
 		port: options.port ? Number(options.port) : undefined,
 	};
@@ -102,6 +104,7 @@ async function commandReview(options) {
 	const result = await runPrReview({
 		scope: run.scope, index: run.index, deep,
 		model: options.reviewModel ?? options.model,
+		reasoningEffort: options.reviewEffort,
 	});
 	if (options.json) {
 		process.stdout.write(`${JSON.stringify({

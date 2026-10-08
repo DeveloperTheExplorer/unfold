@@ -23,6 +23,8 @@ const state = {
 	busy: new Set(),
 	asking: new Set(),
 	questions: {},
+	reviewerAsking: new Set(),
+	reviewPending: {},
 	visited: new Set(),
 	trace: null,
 	traceHistory: [],
@@ -30,6 +32,7 @@ const state = {
 	reviewPlan: { status: 'idle', chunks: [], generated: false, warning: null },
 	planByBlock: new Map(),
 	prReview: { status: 'idle' },
+	reviewSettings: { model: '', reasoningEffort: '', initialized: false },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -118,6 +121,16 @@ const truncate = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}�
 const counts = (node) => (node.added || node.removed
 	? `<span class="add">+${node.added}</span> <span class="del">−${node.removed}</span>`
 	: '');
+
+function applyPrReview(review) {
+	state.prReview = review ?? { status: 'idle' };
+	if (!state.reviewSettings.initialized) {
+		const model = state.prReview.model === 'codex-default' ? null : state.prReview.model;
+		state.reviewSettings.model = model ?? state.prReview.defaults?.model ?? '';
+		state.reviewSettings.reasoningEffort = state.prReview.reasoningEffort ?? state.prReview.defaults?.reasoningEffort ?? '';
+		state.reviewSettings.initialized = true;
+	}
+}
 
 /* ---------- tree ---------- */
 
@@ -394,9 +407,14 @@ function testAppendixHtml() {
 function prReviewHtml() {
 	const review = state.prReview ?? { status: 'idle' };
 	const resume = review.threadId ? `codex exec resume ${review.threadId} "Follow up on the PR review."` : '';
-	const controls = review.status === 'running'
-		? '<button class="btn" disabled>Review running…</button>'
+	const locked = review.status === 'running' || review.questionBusy;
+	const controls = locked
+		? `<button class="btn" disabled>${review.questionBusy ? 'Reviewer answering…' : 'Review running…'}</button>`
 		: `<button class="btn primary" id="review-run">${review.status === 'complete' ? 'Run again' : 'Run PR review'}</button><button class="btn" id="review-deep">Force deep review</button>`;
+	const effortOptions = [
+		['', 'Default effort'], ['low', 'Low'], ['medium', 'Medium'],
+		['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Maximum'],
+	].map(([value, label]) => `<option value="${value}" ${state.reviewSettings.reasoningEffort === value ? 'selected' : ''}>${label}</option>`).join('');
 	const status = review.status === 'running'
 		? `<div class="agent-review-status running"><span class="spin">◴</span><div><b>${escapeHtml(review.activity ?? 'Reviewing the PR…')}</b><span>Codex is independently checking the repository and each Unfold chunk.</span></div></div>`
 		: review.status === 'failed'
@@ -406,10 +424,17 @@ function prReviewHtml() {
 		? `<details class="agent-review-output" open><summary>Verified review findings</summary><div class="prose">${markdown(review.body)}</div></details>`
 		: '';
 	return `<section class="agent-review" id="agent-review">
-		<div class="agent-review-head"><div><span class="eyebrow">Independent review</span><h2>Codex + Unfold chunks</h2><p>The <code>pr-review</code> skill verifies the PR independently, then uses this execution-ordered map to make sure every change is inspected.</p></div><div class="actions">${controls}</div></div>
+		<div class="agent-review-head"><div><span class="eyebrow">Independent review</span><h2>Codex + Unfold chunks</h2><p>The <code>pr-review</code> skill verifies the PR independently, then uses this execution-ordered map to make sure every change is inspected.</p></div></div>
+		<div class="agent-review-controls">
+			<label class="agent-control"><span>Model</span><input id="review-model" list="review-models" value="${escapeHtml(state.reviewSettings.model)}" placeholder="Codex default" ${locked ? 'disabled' : ''}></label>
+			<datalist id="review-models"><option value="gpt-6.1-sol"><option value="gpt-6-astra"><option value="gpt-6-sol"><option value="gpt-6-luna"></datalist>
+			<label class="agent-control"><span>Reasoning effort</span><select id="review-effort" ${locked ? 'disabled' : ''}>${effortOptions}</select></label>
+			<div class="agent-run-actions">${controls}</div>
+		</div>
+		<p class="agent-control-note">Leave either setting on default to follow your Codex configuration. Effort support depends on the selected model; these settings also apply to follow-up questions.</p>
 		<div class="agent-capabilities"><span>Repository-aware session</span><span>git + shell</span><span>configured MCPs</span><span>workspace approvals</span></div>
 		${status}${output}
-		${review.threadId ? `<div class="agent-session"><span>Persistent Codex session · ${escapeHtml(review.threadId)}</span><button class="link" id="review-copy-resume" data-resume="${escapeHtml(resume)}">copy resume command</button></div>` : ''}
+		${review.threadId ? `<div class="agent-session"><span>Persistent session · ${escapeHtml(review.model || 'Codex default')} · ${escapeHtml(review.reasoningEffort || 'default effort')} · ${escapeHtml(review.threadId)}</span><button class="link" id="review-copy-resume" data-resume="${escapeHtml(resume)}">copy resume command</button></div>` : ''}
 	</section>`;
 }
 
@@ -555,19 +580,35 @@ function traceMapHtml(data) {
 }
 
 function questionsHtml(data) {
-	const thread = state.questions[data.node.key] ?? [];
-	const busy = state.asking.has(data.node.id);
+	const quickThread = (state.questions[data.node.key] ?? []).map((entry) => ({ ...entry, source: 'quick' }));
+	const reviewerThread = (state.prReview?.messages ?? [])
+		.filter((entry) => entry.nodeKey === data.node.key)
+		.map((entry) => ({ ...entry, source: 'reviewer' }));
+	const pending = state.reviewPending[data.node.key] ?? [];
+	const thread = [...quickThread, ...reviewerThread, ...pending];
+	const quickBusy = state.asking.has(data.node.id);
+	const reviewerBusy = state.reviewerAsking.has(data.node.id) || state.prReview?.questionBusy;
+	const busy = quickBusy || reviewerBusy;
+	const reviewReady = state.prReview?.status === 'complete' && Boolean(state.prReview?.threadId);
 	const block = data.node.kind === 'block';
 	const root = data.node.kind === 'root';
 	const scopeLabel = state.planByBlock.get(data.node.id)?.title ?? data.node.label;
+	const messages = thread.map((entry) => {
+		const reviewer = entry.source === 'reviewer';
+		const who = entry.role === 'user' ? (reviewer ? 'You · reviewer' : 'You') : (reviewer ? 'Codex reviewer' : 'Quick answer');
+		return `<div class="message ${entry.role} ${reviewer ? 'reviewer' : 'quick'}"><span>${who}</span><div>${entry.role === 'assistant' ? markdown(entry.body) : escapeHtml(entry.body)}</div></div>`;
+	}).join('');
 	return `<div class="group ask-panel">
 		<div class="ask-heading"><div><span class="eyebrow">${root ? 'Ask about this PR' : block ? 'Ask about this change' : 'Ask about this code'}</span><p>${root ? 'Question the goal, scope, or overall implementation.' : block ? 'Question the purpose, boundaries, or behavior of this review block.' : 'Question the code in the context you are currently reading.'}</p></div><span class="scope-chip">${escapeHtml(scopeLabel)}</span></div>
-		${thread.length ? `<div class="conversation">${thread.map((entry) => `<div class="message ${entry.role}"><span>${entry.role === 'user' ? 'You' : 'Unfold'}</span><div>${entry.role === 'assistant' ? markdown(entry.body) : escapeHtml(entry.body)}</div></div>`).join('')}</div>` : ''}
+		${thread.length ? `<div class="conversation">${messages}</div>` : ''}
 		<div class="ask-compose">
 			<textarea id="question-body" placeholder="Why is this needed? What calls it? What happens when it fails?" ${busy ? 'disabled' : ''}></textarea>
-			<button class="btn primary" id="question-send" ${busy ? 'disabled' : ''}>${busy ? 'Answering…' : 'Ask'}</button>
+			<div class="ask-actions">
+				<button class="btn" id="question-send" ${busy ? 'disabled' : ''}>${quickBusy ? 'Answering…' : 'Quick answer'}</button>
+				<button class="btn primary" id="review-question-send" ${busy || !reviewReady ? 'disabled' : ''}>${reviewerBusy ? 'Reviewer answering…' : reviewReady ? 'Ask Codex reviewer' : 'Run agent review first'}</button>
+			</div>
 		</div>
-		<div class="ask-foot">${root ? 'Grounded in the PR description, linked context, and complete diff.' : block ? 'Grounded in this block and every code unit it contains.' : 'Grounded in this symbol, its dependencies, and callers.'}</div>
+		<div class="ask-foot">Quick answer uses the current node context. Codex reviewer continues the full repository-aware review session with git, shell, and configured integrations.</div>
 	</div>`;
 }
 
@@ -843,6 +884,40 @@ async function askQuestion() {
 	}
 }
 
+async function askReviewQuestion() {
+	const data = state.detail;
+	const question = $('question-body')?.value?.trim();
+	if (!data || !question || state.reviewerAsking.has(data.node.id)) return;
+	if (state.prReview?.status !== 'complete' || !state.prReview?.threadId) {
+		toast('Run the agent review before asking the Codex reviewer.', 5000);
+		return;
+	}
+	const key = data.node.key;
+	state.reviewPending[key] = [{ role: 'user', body: question, source: 'reviewer' }];
+	state.reviewerAsking.add(data.node.id);
+	renderNarrative();
+	try {
+		const result = await api(`/review-question/${data.node.id}`, {
+			method: 'POST',
+			body: JSON.stringify({
+				question,
+				model: state.reviewSettings.model || null,
+				reasoningEffort: state.reviewSettings.reasoningEffort || null,
+			}),
+		});
+		applyPrReview(result.review);
+		delete state.reviewPending[key];
+	} catch (error) {
+		state.reviewPending[key].push({
+			role: 'assistant', source: 'reviewer', body: `I could not continue the Codex review session: ${error.message}`,
+		});
+	} finally {
+		state.reviewerAsking.delete(data.node.id);
+		renderNarrative();
+		$('narrative').scrollTop = $('narrative').scrollHeight;
+	}
+}
+
 let reviewPollTimer = null;
 
 function scheduleReviewPoll() {
@@ -853,7 +928,7 @@ function scheduleReviewPoll() {
 
 async function refreshPrReview() {
 	try {
-		state.prReview = await api('/review');
+		applyPrReview(await api('/review'));
 		if (state.detail) renderDetail();
 	} catch (error) {
 		toast(`Could not refresh the PR review: ${error.message}`, 5000);
@@ -865,18 +940,23 @@ async function startPrReview(deep = false) {
 	if (state.prReview?.status === 'running') return;
 	if (state.prReview?.status === 'complete' && !confirm('Run a new PR review and replace the result shown here? The previous persistent Codex session will remain available.')) return;
 	state.prReview = {
+		...state.prReview,
 		status: 'running', deep, activity: 'Starting Codex in the repository…',
 		repoRoot: state.scope?.repoRoot,
 	};
 	if (state.detail) renderDetail();
 	try {
-		state.prReview = await api('/review', {
+		applyPrReview(await api('/review', {
 			method: 'POST',
-			body: JSON.stringify({ deep, chunks: state.reviewPlan.chunks ?? [] }),
-		});
+			body: JSON.stringify({
+				deep, chunks: state.reviewPlan.chunks ?? [],
+				model: state.reviewSettings.model || null,
+				reasoningEffort: state.reviewSettings.reasoningEffort || null,
+			}),
+		}));
 		scheduleReviewPoll();
 	} catch (error) {
-		state.prReview = { status: 'failed', error: error.message };
+		state.prReview = { ...state.prReview, status: 'failed', error: error.message };
 		if (state.detail) renderDetail();
 	}
 }
@@ -1073,6 +1153,7 @@ function wire() {
 		if (event.target.id === 'explain-one') { explain('shallow'); return; }
 		if (event.target.id === 'explain-deep') { explain('deep'); return; }
 		if (event.target.id === 'question-send') { askQuestion(); return; }
+		if (event.target.id === 'review-question-send') { askReviewQuestion(); return; }
 		if (event.target.id === 'review-run') { startPrReview(false); return; }
 		if (event.target.id === 'review-deep') { startPrReview(true); return; }
 		if (event.target.id === 'review-copy-resume') {
@@ -1099,6 +1180,11 @@ function wire() {
 			const target = [...state.byId.values()].find((node) => node.key === note?.node_key);
 			if (target) selectNode(target.id);
 		}
+	});
+
+	document.addEventListener('input', (event) => {
+		if (event.target.id === 'review-model') state.reviewSettings.model = event.target.value.trim();
+		if (event.target.id === 'review-effort') state.reviewSettings.reasoningEffort = event.target.value;
 	});
 
 	$('code').addEventListener('click', (event) => {
@@ -1144,7 +1230,10 @@ function wire() {
 		if (event.target.matches('input, textarea')) {
 			if (event.key === 'Escape') event.target.blur();
 			if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && event.target.id === 'note-body') saveNote();
-			if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && event.target.id === 'question-body') askQuestion();
+			if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && event.target.id === 'question-body') {
+				if (state.prReview?.status === 'complete' && state.prReview?.threadId) askReviewQuestion();
+				else askQuestion();
+			}
 			return;
 		}
 		const rows = visibleRows(state.tree);
@@ -1263,7 +1352,7 @@ async function boot() {
 	state.notes = run.notes;
 	state.cost = run.cost;
 	indexTree(state.tree);
-	try { state.prReview = await api('/review'); } catch { state.prReview = { status: 'idle' }; }
+	try { applyPrReview(await api('/review')); } catch { applyPrReview({ status: 'idle' }); }
 
 	// Keep the block list scannable; opening a block reveals its repeated code.
 	state.expanded.add(state.tree.id);

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS pr_review (
   status       TEXT NOT NULL,
   body         TEXT,
   model        TEXT,
+  reasoning_effort TEXT,
   thread_id    TEXT,
   activity     TEXT,
   error        TEXT,
@@ -77,6 +78,17 @@ CREATE TABLE IF NOT EXISTS pr_review (
   completed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS pr_review_scope ON pr_review (scope_key, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS pr_review_message (
+  id         TEXT PRIMARY KEY,
+  review_id  TEXT NOT NULL REFERENCES pr_review(id) ON DELETE CASCADE,
+  node_key   TEXT NOT NULL,
+  node_id    TEXT,
+  role       TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_review_message_review ON pr_review_message (review_id, created_at);
 `;
 
 export function openDb(repoRoot) {
@@ -86,6 +98,8 @@ export function openDb(repoRoot) {
 	db.exec('PRAGMA journal_mode = WAL');
 	db.exec('PRAGMA foreign_keys = ON');
 	db.exec(SCHEMA);
+	const reviewColumns = new Set(db.prepare('PRAGMA table_info(pr_review)').all().map((column) => column.name));
+	if (!reviewColumns.has('reasoning_effort')) db.exec('ALTER TABLE pr_review ADD COLUMN reasoning_effort TEXT');
 	return db;
 }
 
@@ -95,11 +109,12 @@ export function createPrReview(db, review) {
 	const timestamp = now();
 	db.prepare(
 		`INSERT INTO pr_review
-		 (id, scope_key, content_hash, deep, status, model, activity, started_at)
-		 VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
+		 (id, scope_key, content_hash, deep, status, model, reasoning_effort, activity, started_at)
+		 VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
 	).run(
 		review.id, review.scopeKey, review.contentHash, review.deep ? 1 : 0,
-		review.model ?? null, review.activity ?? 'Starting Codex…', timestamp,
+		review.model ?? null, review.reasoningEffort ?? null,
+		review.activity ?? 'Starting Codex…', timestamp,
 	);
 	return getPrReview(db, review.id);
 }
@@ -113,7 +128,7 @@ export function latestPrReview(db, scopeKey) {
 }
 
 export function updatePrReview(db, id, fields) {
-	const allowed = ['status', 'body', 'model', 'thread_id', 'activity', 'error', 'completed_at'];
+	const allowed = ['status', 'body', 'model', 'reasoning_effort', 'thread_id', 'activity', 'error', 'completed_at'];
 	const sets = [];
 	const values = [];
 	for (const key of allowed) {
@@ -128,9 +143,27 @@ export function updatePrReview(db, id, fields) {
 export function completePrReview(db, id, result) {
 	return updatePrReview(db, id, {
 		status: 'complete', body: result.body, model: result.model,
+		reasoning_effort: result.reasoningEffort ?? null,
 		thread_id: result.threadId ?? null, activity: 'Review complete', error: null,
 		completed_at: now(),
 	});
+}
+
+export function createPrReviewMessage(db, { reviewId, nodeKey, nodeId, role, body }) {
+	const message = {
+		id: randomUUID(), review_id: reviewId, node_key: nodeKey, node_id: nodeId ?? null,
+		role, body, created_at: now(),
+	};
+	db.prepare(
+		`INSERT INTO pr_review_message (id, review_id, node_key, node_id, role, body, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	).run(message.id, message.review_id, message.node_key, message.node_id, message.role, message.body, message.created_at);
+	return message;
+}
+
+export function listPrReviewMessages(db, reviewId) {
+	if (!reviewId) return [];
+	return db.prepare('SELECT * FROM pr_review_message WHERE review_id = ? ORDER BY created_at, rowid').all(reviewId);
 }
 
 export function failPrReview(db, id, error, threadId = null) {
